@@ -1,6 +1,7 @@
 """Tests of the functions in `sampling_tools.pxd` or their wrappers found in
 `tofu.geom`.
 """
+import itertools
 import numpy as np
 import tofu as tf
 import tofu.geom._GG as GG
@@ -185,7 +186,7 @@ def test04_ves_vmesh_lin():
 # =============================================================================
 # Ves  - Solid angles
 # =============================================================================
-def test05_sa_integ_map(ves_poly=VPoly, debug=0):
+def test05_sa_integ_map(ves_poly=VPoly, debug=3):
     import matplotlib.pyplot as plt
     print()
 
@@ -361,6 +362,157 @@ def test05_sa_integ_map(ves_poly=VPoly, debug=0):
                            equal_nan=True)
         assert np.allclose(sa_map_py, sa_map_py_ex, atol=1e-14, rtol=1e-16,
                            equal_nan=True)
+    # ...
+    return
 
+
+def test06_sa_integ_poly_map(ves_poly=VPoly, debug=3):
+    import matplotlib.pyplot as plt
+    print()
+
+    config = tf.load_config("A1")
+    for name_pfc in ['BaffleV0', "DivUpV1", "DivLowITERV1"]:
+        try:
+            config.remove_Struct("PFC", name_pfc)
+        except:
+            pass
+
+
+    kwdargs = config.get_kwdargs_LOS_isVis()
+    ves_poly = kwdargs["ves_poly"]
+
+    if debug > 2:
+        config.plot()
+        fig = plt.gcf()
+        fig.savefig("configuration")
+
+    # coordonnées en x,y,z:
+    poly_coords = [
+        np.array([
+            [2.50, 0, -0.4],
+            [2.50, 0, -0.1],
+            [2.60, 0, -0.1],
+            [2.70, 0, -0.1],
+            [2.75, 0, -0.1],
+            [2.75, 0, -0.4],
+            [2.7, 0, -0.4],
+        ]).T,  # first polygon
+        np.array([
+            [2.2, 0., 0.25],
+            [2.2, 0., 0.50],
+            [2.5, 0., 0.50],
+            [2.7, 0., 0.50],
+            [3.0, 0., 0.50],
+            [3.0, 0., 0.25],
+            [2.6, 0., 0.25],
+        ]).T,
+    ]
+    poly_coords = [np.ascontiguousarray(poly) for poly in poly_coords]
+    poly_lnorms = np.array([
+        [0, 1., 0],
+        [0, 1., 0],
+    ])
+    poly_lnvert = np.array([poly.shape[1] for poly in poly_coords])
+    limits_r, limits_z = compute_min_max_r_and_z(ves_poly)
+
+    lblock = [False]  #, True]
+    lstep_rz = [
+        # 0.01,
+        0.01,
+    ]
+
+    test_cases = list(itertools.product(lblock, lstep_rz))
+
+    for (block, step_rz) in test_cases:
+
+        rstep = zstep = step_rz
+        zstep = step_rz
+        phistep = 0.01
+        DR = None  # [2.45, 2.8]
+        DZ = None  # [-0.5, 0.]
+        DPhi = None  # [-0.1, 0.1]
+
+        # -- Getting cython APPROX computation --------------------------------
+        res = GG.compute_solid_angle_poly_map(
+            poly_coords,
+            poly_lnorms,
+            poly_lnvert,
+            rstep, zstep, phistep,
+            limits_r, limits_z,
+            DR=DR, DZ=DZ,
+            DPhi=DPhi,
+            block=block,
+            limit_vpoly=ves_poly,
+            **kwdargs,
+        )
+        pts, sa_map_cy, ind, reso_r_z = res
+
+        # check sizes
+        npts_ind = np.size(ind)
+        dim, npts = np.shape(pts)
+        npts_sa, npoly = np.shape(sa_map_cy)
+
+        if debug > 2:
+            print(f"sa_map_cy is of size {npts_sa},{npoly}")
+
+        # Checking shapes, sizes, types
+        assert dim == 2
+        assert npoly == len(poly_coords), str(len(poly_coords))
+        assert npts_ind == npts
+        assert npts == npts_sa
+        assert isinstance(reso_r_z, float)
+
+        if debug > 0:
+            for pp in range(npoly):
+                plt.clf()
+                fig = plt.figure()
+                ax = plt.subplot(111)
+                # import pdb; pdb.set_trace()
+                im = ax.scatter(pts[0, :], pts[1, :],
+                                marker="s", edgecolors="None",
+                                s=40, c=sa_map_cy[:, pp].flatten(),
+                                vmin=sa_map_cy[:, pp].min(),
+                                vmax=sa_map_cy[:, pp].max())
+                poly = poly_coords[pp]
+                xpoly = np.sqrt(poly[0]**2 + poly[1]**2)
+                zpoly = poly[2]
+                ax.plot(
+                    xpoly[[iii for iii in range(np.size(xpoly))]+[0]],
+                    zpoly[[iii for iii in range(np.size(xpoly))]+[0]],
+                    "r-", marker='o',
+                    linewidth=2,
+                )
+                ax.plot()
+                ax.set_title("cython function")
+                fig.colorbar(im, ax=ax)
+                plt.savefig("sa_map_poly" + str(pp)
+                            + "_block" + str(block)
+                            + "_steprz" + str(step_rz).replace(".", "_"))
+
+        # max_py = np.max(sa_map_py)
+        # max_cy = np.max(sa_map_cy)
+        # max_py_ex = np.max(sa_map_py_ex)
+        # max_cy_ex = np.max(sa_map_cy_ex)
+
+        # err = np.abs(sa_map_py - sa_map_cy) / max(max_py, max_cy)
+        # print("max error approx py vs cy =", np.max(err))
+
+        # err = np.abs(sa_map_py_ex - sa_map_cy_ex) / max(max_py_ex, max_cy_ex)
+        # print("max error exacts py vs cy =", np.max(err))
+
+        # err = np.abs(sa_map_py_ex - sa_map_py) / max(max_py, max_py_ex)
+        # print("max error python approx vs exact =", np.max(err))
+
+        # err = np.abs(sa_map_cy_ex - sa_map_cy) / max(max_cy, max_cy_ex)
+        # print("max error cython approx vs exact =", np.max(err))
+
+        # assert np.allclose(sa_map_cy, sa_map_py, atol=1e-16, rtol=1e-16,
+        #                    equal_nan=True)
+        # assert np.allclose(sa_map_cy_ex, sa_map_py_ex, atol=1e-16, rtol=1e-16,
+        #                    equal_nan=True)
+        # assert np.allclose(sa_map_cy, sa_map_cy_ex, atol=1e-14, rtol=1e-16,
+        #                    equal_nan=True)
+        # assert np.allclose(sa_map_py, sa_map_py_ex, atol=1e-14, rtol=1e-16,
+        #                    equal_nan=True)
     # ...
     return
